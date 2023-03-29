@@ -1,0 +1,35 @@
+exp_name: ''
+train_data: 'train/'
+test_data: 'test/'
+manualSeed: 1234
+
+# learning parameters
+workers: 4
+batch_size: 32
+num_iter: 10 # in general, it means total batch size. but if valInterval <= 0, it means total epoch
+valInterval: -1
+saved_model: ''
+FT: false
+
+adam: false
+lr: 0.01
+beta1: 0.9
+rho: 0.95
+eps: 1e-8
+grad_clip: 5
+
+# transform parameters
+imgH: 128
+imgW: 128
+
+# model parameters
+feature_dim: 1024
+num_classes: 3
+
+# train parameters
+verbose: -1
+
+
+# kfold: 
+kfold: 0
+n_splits: 5

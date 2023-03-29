@@ -1,0 +1,1 @@
+python train.py --batch_size 32 --valInterval -1 --num_classes 3 --exp_name ClassExampleV1_0 --num_iter 2000 --kfold 0 --n_splits 5
