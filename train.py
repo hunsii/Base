@@ -17,13 +17,14 @@ import pandas as pd
 import numpy as np
 
 import cv2
+from sklearn.metrics import f1_score, accuracy_score
 from sklearn.model_selection import train_test_split
 
 from sklearn import metrics
 
 
-from dataset import CustomDataset, preprocessing_df, ClassDataset
-from model import CrashModelV2_2D, CrashModelV2_3D
+from dataset import CustomDataset
+from model import Model
 from test import validation
 from utils import BalancekFold, kfold_data_split, parse_yaml
 
@@ -34,47 +35,32 @@ def get_values(value):
 
 def train(opt):
     """ dataset preparation """
-    paper_path_list = glob.glob("data/paper/*")
-    rock_path_list = glob.glob("data/rock/*")
-    scissors_path_list = glob.glob("data/scissors/*")
+    df = pd.read_csv(opt.train_data)
 
-    # len(paper_path_list), len(rock_path_list), len(scissors_path_list)
-    path_list = np.array(paper_path_list + rock_path_list + scissors_path_list)
-    label_list = np.array([0 for i in range(len(paper_path_list))] + [0 for i in range(len(rock_path_list))] + [0 for i in range(len(scissors_path_list))])
-    original_data_shape = path_list.shape
+    img_path_list = df.path.to_numpy()
+    label_path_list = df.label.to_numpy()
 
     # def kfold_data_split(df, kfold = 0, n_splits = 10, random_state = 1):
-    train_index, valid_index = kfold_data_split(path_list, kfold=opt.kfold, n_splits=opt.n_splits, random_state=opt.manualSeed)
+    train_index, valid_index = kfold_data_split(img_path_list, kfold=opt.kfold, n_splits=opt.n_splits, random_state=opt.manualSeed)
     print(train_index.shape)
-    # print(train_index[0])
-    # print(len(path_list))
-    # print(len(label_list))
-    
-    train_dataset = ClassDataset(opt, path_list[[train_index]], label_list[[train_index]], valid_mode = False)
+
+    train_dataset = CustomDataset(opt, img_path_list[[train_index]], label_path_list[[train_index]], transforms_type = "train")
     train_loader = DataLoader(train_dataset, batch_size = opt.batch_size, shuffle=True, num_workers=0)
 
-    valid_dataset = ClassDataset(opt, path_list[[valid_index]], label_list[[valid_index]], valid_mode = False)
+    valid_dataset = CustomDataset(opt, img_path_list[[valid_index]], label_path_list[[valid_index]], transforms_type = "valid")
     valid_loader = DataLoader(valid_dataset, batch_size = opt.batch_size, shuffle=False, num_workers=0)
     
     with open(f'./saved_models/{opt.exp_name}/log_dataset.txt', 'a') as log:
         dataset_log = '------------ Datasets -------------\n'
-        dataset_log +=f"ego_only: {opt.ego_only}\nn_splits: {opt.n_splits}\nfold: {opt.kfold}"
-        dataset_log += f"original data: {original_data_shape}\n"
-        dataset_log += f"train_df length: {path_list[[train_index]].shape}\n"
-        dataset_log += f"valid_df length: {label_list[[valid_index]].shape}\n"
+        dataset_log += f"train_df length: {img_path_list[[train_index]].shape}\n"
+        dataset_log += f"valid_df length: {label_path_list[[valid_index]].shape}\n"
 
         print(dataset_log)
         log.write(dataset_log)
 
     print("------------ Model ------------")
-    if opt.video_input:
-        print("3D model is loading...")
-        model = CrashModelV2_3D(opt).to(device)
-    else:
-        print("2D model is loading...")
-        model = CrashModelV2_2D(opt).to(device)
+    model = Model(opt).to(device)
         
-#     model = model
     model.train()
     if opt.saved_model != '':
         print(f'loading pretrained model from {opt.saved_model}')
@@ -116,109 +102,99 @@ def train(opt):
 #     sys.exit()
         
     """ start training """
-    start_iter = 0
+    start_iter = opt.start_iter
     start_time = time.time()
-    best_accuracy = -1
+    best_accuracy: -1
     best_f1 = -1
-    iteration = start_iter
+#     iteration = start_iter
     scheduler = None
 
+    info_dict = {
+        'start_time': start_time,
+        'iteration': start_iter,
+        'best_accuracy': -1, 
+        'best_f1': -1, 
+    }
+    
     criterion = nn.CrossEntropyLoss().to(device)
-    with open(f'./saved_models/{opt.exp_name}/log_train.csv', 'a') as f:
-        f.write("iteration,train_loss,valid_loss,valid_f1,valid_acc,elapsed_time\n")
+#     with open(f'./saved_models/{opt.exp_name}/log_train.csv', 'a') as f:
+#         f.write("iteration,train_loss,valid_loss,valid_f1,valid_acc,elapsed_time\n")
+
     while True:
         model.train()
         train_loss = []
         true_labels = []
         pred_labels = []
-        
-        for videos, labels in iter(train_loader):
-            videos = videos.to(device)
+        info_dict['epoch'] = info_dict['iteration'] / (np.ceil(len(img_path_list) / opt.batch_size))
+    
+        for images, labels in iter(train_loader):
+            
+            
+            images = images.to(device)
             labels = labels.to(device)
             
             optimizer.zero_grad()
             
-            output = model(videos)
+            output = model(images)
             loss = criterion(output, labels)
             
             loss.backward()
             optimizer.step()
             
             train_loss.append(loss.item())
-            if opt.verbose >= 1:
-                print(f"train_loss: {np.mean(train_loss):.4f}")
+            pred_labels += output.argmax(1).detach().cpu().numpy().tolist()
+            true_labels += labels.detach().cpu().numpy().tolist()
             
             # validation part
-            if opt.valInterval > 0 and ((iteration + 1) % opt.valInterval == 0 or iteration == 0): # To see training progress, we also conduct validation when 'iteration == 0' 
-                elapsed_time = time.time() - start_time
-                epoch = np.floor(iteration / (np.ceil(len(path_list) / opt.batch_size)))
-
-                val_loss, val_f1_score, val_acc_score = validation(model, criterion, valid_loader, device)
-                train_log = f'Epoch    : {epoch}, Iteration [{iteration:6d}], Train Loss : [{np.mean(train_loss):.5f}] Val Loss : [{val_loss:.5f}]\n'
-                train_log+= f"Valid F1 : [{val_f1_score:.5f}], Valid Acc : [{val_acc_score:.5f}] Elapsed_time : [{elapsed_time:0.5f}]"
-                print(train_log)
-                with open(f'./saved_models/{opt.exp_name}/log_train.csv', 'a') as f:
-                    f.write(f"{iteration},{np.mean(train_loss):.6f},{val_loss:.6f},{val_f1_score:.6f},{val_acc_score:.6f},{elapsed_time:0.6f}\n")
-                if best_f1 < val_f1_score:
-                    best_f1 = val_f1_score
-                    torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_f1.pth')
-                if best_accuracy < val_acc_score:
-                    best_accuracy = val_acc_score
-                    torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_accuracy.pth')
-                # # 초기화?
-                train_loss = []
-
+            info_dict = check_validation(opt, model, criterion, valid_loader, info_dict, train_loss, true_labels, pred_labels)
+    
             # 스케줄러
             if scheduler is not None:
                 scheduler.step(val_score)
-            
-            # 종료 조건
-            if (iteration + 1) == opt.num_iter:
-                print('end the training')
-                sys.exit()
-            iteration += 1
-
+            info_dict['iteration'] += 1
+            info_dict['epoch'] = info_dict['iteration'] / (np.ceil(len(img_path_list) / opt.batch_size))
         # validation part
-        if opt.valInterval <= -1:
-            elapsed_time = time.time() - start_time
-            epoch = np.floor(iteration / (np.ceil(len(path_list) / opt.batch_size)))
-
-            val_loss, val_f1_score, val_acc_score = validation(model, criterion, valid_loader, device)
-            train_log = f'Epoch    : {epoch}, Iteration [{iteration:6d}], Train Loss : [{np.mean(train_loss):.5f}] Val Loss : [{val_loss:.5f}]\n'
-            train_log+= f"Valid F1 : [{val_f1_score:.5f}], Valid Acc : [{val_acc_score:.5f}] Elapsed_time : [{elapsed_time:0.5f}]"
-            print(train_log)
-            with open(f'./saved_models/{opt.exp_name}/log_train.csv', 'a') as f:
-                f.write(f"{iteration},{np.mean(train_loss):.6f},{val_loss:.6f},{val_f1_score:.6f},{val_acc_score:.6f},{elapsed_time:0.6f}\n")
-            if best_f1 < val_f1_score:
-                best_f1 = val_f1_score
-                torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_f1.pth')
-            if best_accuracy < val_acc_score:
-                best_accuracy = val_acc_score
-                torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_accuracy.pth')
+        info_dict = check_validation(opt, model, criterion, valid_loader, info_dict, train_loss, true_labels, pred_labels)
             
-def print_validation(opt, model):
-    elapsed_time = time.time() - start_time
-    epoch = np.floor(iteration / (np.ceil(len(path_list) / opt.batch_size))).astype(np.int8)
-
-    val_loss, val_f1_score, val_acc_score = validation(model, criterion, valid_loader, device)
+def check_validation(opt, model, criterion, valid_loader, info_dict, losses, trues, predes):
+    run_validation = False
+    if opt.valInterval > 0 and ((info_dict['iteration'] + 1) % opt.valInterval == 0 or info_dict['iteration'] == 0): # To see training progress, we also conduct validation when 'iteration == 0' 
+        run_validation = True
+    elif opt.valInterval < 0 and info_dict['epoch'].is_integer():
+        run_validation = True
     
-    # print validation result.
-    train_log = f'Epoch    : {epoch}, Iteration [{iteration:6d}], Train Loss : [{np.mean(train_loss):.5f}] Val Loss : [{val_loss:.5f}]\n'
-    train_log+= f"Valid F1 : [{val_f1_score:.5f}], Valid Acc : [{val_acc_score:.5f}] Elapsed_time : [{elapsed_time:0.5f}]"
-    print(train_log)
-    with open(f'./saved_models/{opt.exp_name}/log_train.csv', 'a') as f:
-        f.write(f"{train_log}\n")
+    if run_validation:
+        # run validation
+        info_dict = validation(opt, model, criterion, valid_loader, info_dict)  
+        
+        info_dict['train_loss'] = np.mean(losses)
+        info_dict['train_f1_score'] = f1_score(trues, predes, average='macro')
+        info_dict['train_accuracy_score'] = accuracy_score(trues, predes)
+        
+        save_log("saved_models/default/test.csv", info_dict)
+    
+    # 종료 조건
+    if (info_dict['iteration'] + 1) == opt.num_iter and opt.valInterval > 0:
+        print('end the training')
+        sys.exit()
+    elif info_dict['epoch'] >= opt.num_iter:
+        print('end the training')
+        sys.exit()
+    
+    return info_dict
 
-    # save current model.
-    if best_f1 < val_f1_score:
-        best_f1 = val_f1_score
-        torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_f1.pth')
+def save_log(path: str, data: dict):
+    if os.path.exists(path):
+        df = pd.read_csv(path)
+        df.append(data, ignore_index = True)
+        df.to_csv(path)
+    else:
+        df = pd.DataFrame.from_records([data])
+        df.to_csv(path)
 
-    if best_accuracy < val_acc_score:
-        best_accuracy = val_acc_score
-        torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_accuracy.pth')
-                
-                
+def get_exp_name(opt, filename):
+    return os.path.join("saved_models", opt.exp_name)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='config/config.yml', help='path to config yaml file')
@@ -230,6 +206,9 @@ if __name__ == '__main__':
     if not opt.exp_name:
         opt.exp_name = "default"
 
+    if os.path.isdir(f'./saved_models/{opt.exp_name}'):
+        print(f"There already exist {opt.exp_name}!!")
+        sys.exit()
     os.makedirs(f'./saved_models/{opt.exp_name}', exist_ok=True)
 
 
@@ -241,5 +220,5 @@ if __name__ == '__main__':
     torch.cuda.manual_seed(opt.manualSeed)
 
 
-#     train(opt)
-    print(opt)
+    train(opt)
+#     print(opt)
