@@ -1,5 +1,6 @@
 # +
 import os
+import time
 import torch
 import argparse
 import numpy as np
@@ -10,11 +11,14 @@ from tqdm.auto import tqdm
 
 from torch.utils.data import DataLoader
 from dataset import CustomDataset
-from model import CrashModelV2_2D, CrashModelV2_3D
+from model import Model
+from utils import parse_yaml, mapping
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
-def validation(model, criterion, val_loader, device):
+def validation(opt, model, criterion, val_loader, loss_dict):
+    elapsed_time = time.time() - loss_dict['start_time']
+    loss_dict['elapsed_time'] = elapsed_time
+    
     model.eval()
     val_loss = []
     preds, trues = [], []
@@ -37,7 +41,22 @@ def validation(model, criterion, val_loader, device):
     
     _val_f1_score = f1_score(trues, preds, average='macro')
     _val_acc_score = accuracy_score(trues, preds)
-    return _val_loss, _val_f1_score, _val_acc_score
+    
+    loss_dict["validation_loss"]           = _val_loss
+    loss_dict["validation_f1_score"]       = _val_f1_score
+    loss_dict["validation_accuracy_score"] = _val_acc_score
+    loss_dict["validation_running_time"]   = loss_dict['elapsed_time'] - time.time()
+    
+    # save current model.
+    if loss_dict['best_f1'] < loss_dict['validation_f1_score']:
+        loss_dict['best_f1'] = loss_dict['validation_f1_score']
+        torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_f1.pth')
+
+    if loss_dict['best_accuracy'] < loss_dict['validation_accuracy_score']:
+        loss_dict['best_accuracy'] = loss_dict['validation_accuracy_score']
+        torch.save(model.state_dict(), f'./saved_models/{opt.exp_name}/best_accuracy.pth')
+    
+    return loss_dict
 
 def inference(model, test_loader, device):
     # model.to(device)
@@ -53,23 +72,20 @@ def inference(model, test_loader, device):
     return preds
 
 def test(opt):
-    test_df = pd.read_csv(opt.test_data)
+    """ dataset preparation """
+    df = pd.read_csv(opt.test_data)
+
+    img_path_list = df.path.to_numpy()
     
-    test_dataset = CustomDataset(opt, test_df['video_path'].values, None)
+    test_dataset = CustomDataset(opt, img_path_list, None, transforms_type="valid")
     test_loader = DataLoader(test_dataset, batch_size = opt.batch_size, shuffle=False, num_workers=0)
     
     print("------------ Model ------------")
-    if opt.video_input:
-        print("3D model is loading...")
-        model = CrashModelV2_3D(opt).to(device)
-    else:
-        print("2D model is loading...")
-        model = CrashModelV2_2D(opt).to(device)
-    model = model.to(device)
+    model = Model(opt).to(device)
 
     # load model
     print('loading pretrained model from %s' % opt.saved_model)
-    model.load_state_dict(torch.load(opt.saved_model, map_location=device))
+    model.load_state_dict(torch.load(opt.saved_model, map_location=device), strict=True)
     opt.exp_name = '_'.join(opt.saved_model.split('/')[1:])
     # print(model)
 
@@ -80,41 +96,27 @@ def test(opt):
 
     """ evaluation """
     preds = inference(model, test_loader, device)
+    preds = [mapping(pred, inverse=True) for pred in preds]
     
     submit = pd.read_csv('sample_submission.csv')
     if opt.test_data == "train.csv":
         submit = pd.read_csv(opt.test_data)
 
+        
+    
     submit['label'] = preds
     submit.to_csv('./submission.csv', index=False)
     if opt.output == "":
         submit.to_csv(f'./result/{opt.label_info}.csv', index=False)
     else:
         submit.to_csv(f'./result/{opt.output}.csv', index=False)
-
+    print("done!")
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--test_data', default='test.csv', help='path to validation dataset')
-    parser.add_argument('--manualSeed', type=int, default=1111, help='for random seed setting')
-    parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
-    parser.add_argument('--batch_size', type=int, default=16, help='input batch size')
-    parser.add_argument('--saved_model', default='', help="path to model to continue training")
-    
-    parser.add_argument('--video_length', type=int, default=50, help='the height of the input image')
-    parser.add_argument('--imgH', type=int, default=128, help='the height of the input image')
-    parser.add_argument('--imgW', type=int, default=128, help='the width of the input image')
-
-    parser.add_argument('--model_name', default='', help='"" | inception_v3')
-    parser.add_argument('--video_input', action='store_true', help='whether to do fine-tuning')
-    parser.add_argument('--feature_dim', type=int, default=1024, help='the width of the input image')
-    parser.add_argument('--num_classes', type=int, default=2, help='the width of the input image')
-
-    parser.add_argument('--use_thumbnail', action='store_true', help='whether to do fine-tuning')
-    parser.add_argument('--label_info', default='', help='the width of the input image')
-    parser.add_argument('--output', default='', help='the width of the input image')
-
-    
+    parser.add_argument('--config', default='config/config.yml', help='path to config yaml file')
     opt = parser.parse_args()
+    opt = parse_yaml(opt.config)
+    
     """ Seed and GPU setting """
     # print("Random Seed: ", opt.manualSeed)
     # random.seed(opt.manualSeed)
@@ -123,4 +125,3 @@ if __name__ == '__main__':
     torch.cuda.manual_seed(opt.manualSeed)
 
     test(opt)
-
