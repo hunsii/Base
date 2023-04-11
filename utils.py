@@ -41,3 +41,10 @@ def BalancekFold(df, column_name, fold_idx = 0, n_splits = 5, random_state = 1):
     y_train = pd.concat(y_list)
     return X_train, y_train
 
+def mapping(n, inverse=False):
+    mapping_dict = {'피스': 0, '터짐': 1, '곰팡이': 2, '들뜸': 3, '오염': 4, '창틀,문틀수정': 5, '면불량': 6, '걸레받이수정': 7, '몰딩수정': 8, '오타공': 9, '석고수정': 10, '이음부불량': 11, '꼬임': 12, '울음': 13, '틈새과다': 14, '훼손': 15, '가구수정': 16, '반점': 17, '녹오염': 18}
+    inverse_mapping = {v: k for k, v in mapping_dict.items()}
+    if inverse:
+        return inverse_mapping[n]
+    return mapping_dict[n]
+    
