@@ -69,8 +69,6 @@ def train(opt):
         else:
             model.load_state_dict(torch.load(opt.saved_model))
 
-#     print(model)
-
     # filter that only require gradient decent
     filtered_parameters = []
     params_num = []
@@ -98,8 +96,6 @@ def train(opt):
         opt_log += '---------------------------------------\n'
         print(opt_log)
         opt_file.write(opt_log)
-
-#     sys.exit()
         
     """ start training """
     start_iter = opt.start_iter
